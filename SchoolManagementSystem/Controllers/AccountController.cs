@@ -34,7 +34,7 @@ namespace SchoolManagementSystem.Controllers
         // Displays the login page
         public IActionResult Login()
         {
-            if (User.Identity.IsAuthenticated)
+            if (User.Identity?.IsAuthenticated == true)
             {
                 return RedirectToAction("Index", "Home");
             }
@@ -87,79 +87,97 @@ namespace SchoolManagementSystem.Controllers
         [HttpGet]
         public IActionResult Register()
         {
+            var tempPassword = GenerateRandomPassword();
+
             var model = new RegisterNewUserViewModel
             {
-                TemporaryPassword = GenerateRandomPassword()
+                TemporaryPassword = tempPassword,
+                Password = tempPassword,
+                Confirm = tempPassword
             };
-
-            // Fill in temporary password automatically
-            model.Password = model.TemporaryPassword;
-            model.Confirm = model.TemporaryPassword;
 
             return View(model);
         }
 
         // Processes the registration
         [HttpPost]
+        [ValidateAntiForgeryToken]
         public async Task<IActionResult> Register(RegisterNewUserViewModel model)
         {
-            if (ModelState.IsValid)
+            if (!ModelState.IsValid)
             {
-                var user = await _userHelper.GetUserByEmailAsync(model.Username);
-
-                if (user == null)
-                {
-                    user = new User
-                    {
-                        FirstName = model.FirstName,
-                        LastName = model.LastName,
-                        Email = model.Username,
-                        UserName = model.Username,
-                        Address = model.Address,
-                        PhoneNumber = model.PhoneNumber,
-                        DateCreated = DateTime.UtcNow
-                    };
-
-                    string temporaryPassword = GenerateRandomPassword();
-                    model.TemporaryPassword = temporaryPassword;
-
-                    // Create user with temporary password
-                    var result = await _userHelper.AddUserAsync(user, temporaryPassword);
-                    if (result != IdentityResult.Success)
-                    {
-                        ModelState.AddModelError(string.Empty, "The user could not be created.");
-                        return View(model);
-                    }
-
-                    // Assign the role "Pending"
-                    await _userHelper.AddUserToRoleAsync(user, "Pending");
-
-                    // Generates the email activation token
-                    string myToken = await _userHelper.GenerateEmailConfirmationTokenAsync(user);
-                    string tokenLink = Url.Action("ConfirmEmail", "Account", new { userid = user.Id, token = myToken }, protocol: HttpContext.Request.Scheme);
-
-                    // Send email with temporary password and activation link
-                    string emailBody = $"<h1>Account Created</h1><p>Your temporary password is: {temporaryPassword}</p><p>Click here to activate your account and change your password: <a href=\"{tokenLink}\">Activate Account</a></p>";
-
-                    Helpers.Response response = _mailHelper.SendEmail(model.Username, "Account Created", emailBody);
-
-                    if (response.IsSuccess)
-                    {
-                        ViewBag.Message = "User created successfully. An email was sent with further instructions.";
-
-                        ViewBag.Links = new Dictionary<string, string>
-                        {
-                            { "Create Student", Url.Action("Create", "Students") },
-                            { "Create Employee", Url.Action("Create", "Employees") },
-                            { "Create Teacher", Url.Action("Create", "Teachers") }
-                        };
-
-                        return View(model);
-                    }
-
-                    ModelState.AddModelError(string.Empty, "Error sending confirmation email.");
-                }
+                return View(model);
             }
+
+            var user = await _userHelper.GetUserByEmailAsync(model.Username);
+
+            if (user != null)
+            {
+                ModelState.AddModelError(string.Empty, "This email is already registered.");
+                return View(model);
+            }
+
+            user = new User
+            {
+                FirstName = model.FirstName,
+                LastName = model.LastName,
+                Email = model.Username,
+                UserName = model.Username,
+                Address = model.Address,
+                PhoneNumber = model.PhoneNumber,
+                DateCreated = DateTime.UtcNow
+            };
+
+            // Dùng luôn password đang có trên form
+            string temporaryPassword = model.Password;
+            model.TemporaryPassword = temporaryPassword;
+
+            var result = await _userHelper.AddUserAsync(user, temporaryPassword);
+            if (result != IdentityResult.Success)
+            {
+                ModelState.AddModelError(string.Empty, "The user could not be created.");
+                return View(model);
+            }
+
+            await _userHelper.AddUserToRoleAsync(user, "Pending");
+
+            string myToken = await _userHelper.GenerateEmailConfirmationTokenAsync(user);
+
+            // truyền luôn temporaryPassword sang ConfirmEmail
+            string? tokenLink = Url.Action(
+                "ConfirmEmail",
+                "Account",
+                new { userId = user.Id, token = myToken, temporaryPassword = temporaryPassword },
+                protocol: HttpContext.Request.Scheme);
+
+            if (string.IsNullOrEmpty(tokenLink))
+            {
+                ModelState.AddModelError(string.Empty, "Could not generate confirmation link.");
+                return View(model);
+            }
+
+            string emailBody =
+                $"<h1>Account Created</h1>" +
+                $"<p>Your temporary password is: <b>{temporaryPassword}</b></p>" +
+                $"<p>Click here to activate your account and change your password: " +
+                $"<a href=\"{tokenLink}\">Activate Account</a></p>";
+
+            Helpers.Response response = _mailHelper.SendEmail(model.Username, "Account Created", emailBody);
+
+            if (!response.IsSuccess)
+            {
+                ModelState.AddModelError(string.Empty, $"Error sending confirmation email: {response.Message}");
+                return View(model);
+            }
+
+            ViewBag.Message = "User created successfully. An email was sent with further instructions.";
+
+            ViewBag.Links = new Dictionary<string, string>
+            {
+                { "Create Student", Url.Action("Create", "Students") ?? "#" },
+                { "Create Employee", Url.Action("Create", "Employees") ?? "#" },
+                { "Create Teacher", Url.Action("Create", "Teachers") ?? "#" }
+            };
 
             return View(model);
         }
@@ -167,7 +185,13 @@ namespace SchoolManagementSystem.Controllers
         // Displays the change user details page
         public async Task<IActionResult> ChangeUser()
         {
-            var user = await _userHelper.GetUserByEmailAsync(User.Identity.Name);
+            var email = User.Identity?.Name;
+            if (string.IsNullOrEmpty(email))
+            {
+                return RedirectToAction("NotAuthorized");
+            }
+
+            var user = await _userHelper.GetUserByEmailAsync(email);
 
             if (user == null)
             {
@@ -178,8 +202,8 @@ namespace SchoolManagementSystem.Controllers
             {
                 FirstName = user.FirstName,
                 LastName = user.LastName,
-                Address = user.Address,
-                PhoneNumber = user.PhoneNumber
+                Address = user.Address ?? string.Empty,
+                PhoneNumber = user.PhoneNumber ?? string.Empty
             };
 
             return View(model);
@@ -191,7 +215,13 @@ namespace SchoolManagementSystem.Controllers
         {
             if (ModelState.IsValid)
             {
-                var user = await _userHelper.GetUserByEmailAsync(User.Identity.Name);
+                var email = User.Identity?.Name;
+                if (string.IsNullOrEmpty(email))
+                {
+                    return RedirectToAction("NotAuthorized");
+                }
+
+                var user = await _userHelper.GetUserByEmailAsync(email);
 
                 if (user != null)
                 {
@@ -230,9 +260,9 @@ namespace SchoolManagementSystem.Controllers
         }
 
         // Email confirmation
-        public async Task<IActionResult> ConfirmEmail(string userId, string token)
+        public async Task<IActionResult> ConfirmEmail(string userId, string token, string temporaryPassword)
         {
-            if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(token))
+            if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(token) || string.IsNullOrEmpty(temporaryPassword))
             {
                 return NotFound();
             }
@@ -249,8 +279,11 @@ namespace SchoolManagementSystem.Controllers
                 return View("Error");
             }
 
-            // Redirects to the page to change the first password
-            return RedirectToAction("ChangeFirstPassword", new { email = user.Email, temporaryPassword = GenerateRandomPassword() });
+            return RedirectToAction("ChangeFirstPassword", new
+            {
+                email = user.Email,
+                temporaryPassword = temporaryPassword
+            });
         }
 
         // Displays the Change First Password page
@@ -327,7 +360,14 @@ namespace SchoolManagementSystem.Controllers
         {
             if (ModelState.IsValid)
             {
-                var user = await _userHelper.GetUserByEmailAsync(this.User.Identity.Name);
+                var email = User.Identity?.Name;
+                if (string.IsNullOrEmpty(email))
+                {
+                    ModelState.AddModelError(string.Empty, "User not found.");
+                    return View(model);
+                }
+
+                var user = await _userHelper.GetUserByEmailAsync(email);
                 if (user != null)
                 {
                     var result = await _userHelper.ChangePasswordAsync(user, model.OldPassword, model.NewPassword);
@@ -335,7 +375,11 @@ namespace SchoolManagementSystem.Controllers
                     {
                         return RedirectToAction("ChangeUser");
                     }
-                    ModelState.AddModelError(string.Empty, result.Errors.FirstOrDefault().Description);
+
+                    ModelState.AddModelError(
+                        string.Empty,
+                        result.Errors.FirstOrDefault()?.Description ?? "Password change failed."
+                    );
                 }
                 else
                 {

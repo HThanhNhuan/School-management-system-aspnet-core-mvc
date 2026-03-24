@@ -1,4 +1,5 @@
 ﻿using MailKit.Net.Smtp;
+using MailKit.Security;
 using MimeKit;
 
 namespace SchoolManagementSystem.Helpers
@@ -20,33 +21,76 @@ namespace SchoolManagementSystem.Helpers
             var port = _configuration["Mail:Port"];
             var password = _configuration["Mail:Password"];
 
+            if (string.IsNullOrWhiteSpace(from))
+            {
+                return new Response
+                {
+                    IsSuccess = false,
+                    Message = "Mail:From is missing in appsettings.json"
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(smtp))
+            {
+                return new Response
+                {
+                    IsSuccess = false,
+                    Message = "Mail:Smtp is missing in appsettings.json"
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(port))
+            {
+                return new Response
+                {
+                    IsSuccess = false,
+                    Message = "Mail:Port is missing in appsettings.json"
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                return new Response
+                {
+                    IsSuccess = false,
+                    Message = "Mail:Password is missing in appsettings.json"
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(to))
+            {
+                return new Response
+                {
+                    IsSuccess = false,
+                    Message = "Recipient email is empty"
+                };
+            }
+
             var message = new MimeMessage();
-            message.From.Add(new MailboxAddress(nameFrom, from));
-            message.To.Add(new MailboxAddress(to, to));
+            message.From.Add(new MailboxAddress(nameFrom ?? "System", from));
+            message.To.Add(MailboxAddress.Parse(to));
             message.Subject = subject;
 
             var bodybuilder = new BodyBuilder
             {
-                HtmlBody = body,
+                HtmlBody = body
             };
             message.Body = bodybuilder.ToMessageBody();
 
             try
             {
-                using (var client = new SmtpClient())
-                {
-                    client.Connect(smtp, int.Parse(port), false);
-                    client.Authenticate(from, password);
-                    client.Send(message);
-                    client.Disconnect(true);
-                }
+                using var client = new SmtpClient();
+                client.Connect(smtp, int.Parse(port), SecureSocketOptions.StartTls);
+                client.Authenticate(from, password);
+                client.Send(message);
+                client.Disconnect(true);
             }
             catch (Exception ex)
             {
                 return new Response
                 {
                     IsSuccess = false,
-                    Message = ex.ToString()
+                    Message = ex.Message
                 };
             }
 
